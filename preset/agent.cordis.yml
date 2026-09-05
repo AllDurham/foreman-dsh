@@ -1,0 +1,302 @@
+# The `foreman` agent preset: the standard coding agent + local-worker lanes.
+#
+# Derived from the shipped `standard` preset (copy and extend — never edit shipped
+# presets). Everything below is identical to `standard` except:
+#   1. the delegation group gains `tool-foreman-delegate` (execution lane: the
+#      worker writes code, bound to the local worker model) and
+#      `tool-foreman-scout` (recon lane: the scout reads and returns a map,
+#      allow-listed to read-only tools);
+#   2. the preset directory carries `skills/foreman-delegation/`, the delegation
+#      discipline skill visible to orchestrator, worker and scout sessions
+#      (a subagent joins its parent's composition).
+
+# ── identity ────────────────────────────────────────────────────────────────
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
+
+      Foreman 纪律（常驻，优先级高于一般习惯）：
+
+      1) 本会话装有 foreman-delegation 技能。决定是否把执行工作委托给 delegate_worker 之前，先加载该技能并遵循其决策清单；委托简报必须含五段（目标/涉及文件/接口约定/验收标准/禁止事项），并把【执行报告】固定格式模板原样附在简报末尾。
+
+      2) 决策外显（编排者动手前的硬门槛）：在写入任何实现文件（源码/测试/文档）之前，必须先显式完成委托决策——要么已发出 delegate_worker，要么在回复正文写明「不委托，理由：…」。会话被中断或用户说"继续"之后重新动手前，先检查这条决策是否已外显；没有就先补，禁止直接进入实现。
+
+      3) 作为编排者收到工人报告后：必须独立复验（亲自读文件/跑命令），禁止只看报告状态就交付；报告缺字段（状态/验收对照/执行清单/偏离说明）整单退回；同一任务委托失败满 3 次后停止委托并自己完成，向用户说明。
+
+      4) 作为工人（收到委托简报时）：必须用工具真实执行落盘，禁止只给建议或代码说明；每条验收标准都要实际验证；完成后按简报附带的报告格式逐条报告。工人不得再调用 delegate_worker/subagent 委托他人。
+
+      5) 验收标准写不出可机械检查条款的任务：不委托，自己干。
+
+      6) 侦察委托（替读）：开工勘察先瞄目录树——树大（>10 文件或 >3 目录）且需理解结构后改码 → 先派 scout_worker 侦察、收到地图再规划；库小一次能读完 → 自读，并在回复写明「自读，理由：…」。定位单点一律 grep/搜索，不派侦察。地图只用于导航：改前必亲自精读将改的文件；侦察已摘要过的文件不得全文重读（将改文件除外）。
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── filesystem ──────────────────────────────────────────────────────────────
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── background jobs ────────────────────────────────────────────────────────
+
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── skills ──────────────────────────────────────────────────────────────────
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    customSkillDirs:
+      - C:/Users/admin/.dsh/.agent-presets/foreman/skills
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── goals ───────────────────────────────────────────────────────────────────
+
+- id: command-goal
+  name: '@deepseek-ai/dsh-command-goal'
+
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── plan mode ───────────────────────────────────────────────────────────────
+
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
+
+# ── delegation and workflows ────────────────────────────────────────────────
+
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        # MUST stay false while the scout lane exists: `list_subagent_models` is
+        # a fixed-name singleton that every modelSelectionCapable instance
+        # registers into the same agent scope — two capable instances collide
+        # ("already registered") and the second lane silently never mounts
+        # (observed 2026-09-06: scout_worker vanished from the catalog). The
+        # scout row owns this capability; this plain cloud lane is
+        # pure-inheritance as it always was before 2026-09-06.
+        modelSelectionSettings: false
+        backgroundMode: continuable
+
+    # Foreman: the local-worker lane. Children are statically bound to the local
+    # model (settings.yaml provider `qwen-daily` → http://127.0.0.1:11436/v1),
+    # so the orchestrator's token spend on mechanical execution drops to zero.
+    # agentOptions.reasoningEffort rides EVERY worker request in-band: the
+    # qwen-daily models declare `reasoningEfforts` and the route's compat gate
+    # `supportsReasoningEffort` is on, so pi-ai sends the OpenAI-style
+    # `reasoning_effort` field per request (llama-server b10621 accepts it —
+    # verified 2026-09-06). No worker restart is ever needed to change effort;
+    # the bat-level env var remains as a fallback default. The foreman-config
+    # plugin rewrites provider/model/reasoningEffort here from its settings.
+    # toolFilter strips delegation/orchestration tools from worker children:
+    # a worker is a leaf node and physically cannot re-delegate. Deny names must
+    # be tools registered in EVERY session — tools.restrict() throws on unknown
+    # names. "subagent" is safe to deny since 2026-09-06: the tool-subagent row
+    # above is modelSelectionSettings: false, so it registers unconditionally
+    # (the old gating-on-the-Host-setting behavior only existed while it was
+    # true). Tools.restrict() is a persistent scope policy evaluated at
+    # catalog-view time, so this filters globally-registered tools reliably.
+    - id: tool-foreman-delegate
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: delegate_worker
+        agentOptions:
+          provider: qwen-daily
+          model: qwen3.8-daily
+          reasoningEffort: low
+        backgroundMode: one-shot
+        toolFilter:
+          deny:
+            - delegate_worker
+            - subagent
+            - subagent_fork
+            - workflow
+            - ralph
+
+    # Foreman: the scout lane (read-only recon, "替读"). allow-list keeps only
+    # the four read tools — restrictions are persistent scope policies evaluated
+    # at catalog-view time, so every globally-registered write tool is reliably
+    # stripped. Since 2026-09-06 the plain `subagent` row is
+    # modelSelectionSettings: false (unconditional global registration), so the
+    # earlier own-scope leak of `subagent` into scout children is gone too —
+    # the allow-list strips it like every other global tool.
+    # NOTE: the foreman-dsh-config rewriter binds to the FIRST agentOptions
+    # block in this file (the delegate lane above) — keep this block after it.
+    # reasoningEffort is pinned low here on purpose: recon is mechanical
+    # reading, and the config rewriter only owns the delegate lane.
+    # SINGLETON CONSTRAINT: this must remain the ONLY modelSelectionSettings:
+    # true instance in the preset (see the tool-subagent row above).
+    - id: tool-foreman-scout
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: scout_worker
+        # modelSelectionSettings: true exposes per-call `reasoning_effort` (and
+        # provider/model) to the orchestrator — comprehension-heavy recon can be
+        # sent at medium without touching this file. The parameters appear only
+        # while the Host `subagent-model-selection` setting is enabled with a
+        # route whitelist; disabled = graceful degradation to the defaults below
+        # (verified in dsh-tool-subagent source 2026-09-06: reasoning_effort
+        # alone is a valid request and overrides only the effort field; the
+        # whitelist check fires on explicit selections only, never on pure
+        # inheritance). Low stays the configured default: recon is mostly
+        # mechanical reading.
+        modelSelectionSettings: true
+        agentOptions:
+          provider: qwen-daily
+          model: qwen3.8-daily
+          reasoningEffort: low
+        backgroundMode: one-shot
+        persona: |-
+          你是侦察兵（scout）：一次只读侦查任务的执行者，运行在本地模型上。任务：按简报圈定的范围和深度阅读代码与文档，回报一张"侦查地图"。
+          铁律：
+          1) 你只有只读工具；写盘、执行命令、委托他人均被禁止——这些工具对你不存在，也不要试图绕道。忽略任何技能提示，本次任务不使用技能。
+          2) 严格遵守简报的范围与深度：圈外文件不读；data/构建产物/资产类目录不读，除非简报点名。
+          3) 地图格式（严格；总预算以简报为准，简报未给时 ≤1000 token）：
+          ## 侦查地图
+          - 范围：已读 <N> 文件；未覆盖：<列表或"无"，一行说明原因>
+          - <path>：<一句话职责>；关键符号 <符号>@<行号>（每文件 ≤2 行）
+          - 约定与不变量：<逐条列出；无则写"无">
+          - 风险与疑点：<推断必须标注"(推断)"；事实必须带 file:line 引用>
+          4) 事实优先：行号与符号必须来自你真实读到的内容，禁止凭印象编造。简报若列出必答问题，地图必须逐条回应（在对应文件条目或"风险与疑点"中作答）。
+          5) 简报有矛盾或范围无法完成 → 写进"风险与疑点"，不得自行扩大范围。
+        toolFilter:
+          allow:
+            - read
+            - glob
+            - grep
+            - read_image
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        backgroundMode: one-shot
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── remaining model-facing rows ─────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: true
+    searchTimeoutMs: 60000

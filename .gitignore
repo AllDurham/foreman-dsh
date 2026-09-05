@@ -1,0 +1,16 @@
+# local artifacts
+node_modules/
+*.log
+.env
+credentials*
+*.zstd
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
+
+# python
+__pycache__/
+.pytest_cache/

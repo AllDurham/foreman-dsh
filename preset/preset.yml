@@ -1,0 +1,2 @@
+name: Foreman 工头模式
+description: 标准编码 Agent 的全部能力，外加 delegate_worker（本地工人委托工具，静态绑定本地模型）与 foreman-delegation 委托纪律技能。适合"云端主脑 + 本地工人"的省 token 工作流。
